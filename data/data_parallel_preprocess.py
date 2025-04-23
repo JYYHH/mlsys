@@ -45,5 +45,11 @@ def split_data(
 
     # Try to get the correct start_idx and end_idx from dp_size, mp_size and rank and return
     # the corresponding data
-
-    raise NotImplementedError
+    data_size = x_train.shape[0]
+    size_per_dp = data_size // dp_size
+    dp_index = rank // mp_size
+    if dp_index >= dp_size:
+        print("Out of bound")
+        return None, None
+    s_index, e_index = dp_index * size_per_dp, (dp_index + 1) * size_per_dp
+    return x_train[s_index: e_index], y_train[s_index: e_index]
