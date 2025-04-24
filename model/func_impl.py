@@ -64,21 +64,23 @@ def get_info(
     """TODO: Your code here"""
 
     # Get the mp_idx, dp_idx from rank, mp_size and dp_size (you may not need to use all three of them)
-
-    ...
+    mp_idx, dp_idx = rank % mp_size, rank // mp_size
 
     # Get the model/data parallel communication groups
     # the model/data parallel communication group is required to apply mpi operations within the scope of the group
     # Hint: try to figure out the relationship between the mp_idx, dp_idx with the mp/dp communication group
     #       and use the comm.Split() function to get the corresponding group.
 
-    ...
+    mp_comm = comm.Split(key = rank, color = dp_idx)
+    dp_comm = comm.Split(key = rank, color = mp_idx)
 
     # Derive the part_in_dim and part_out_dim depend on is_fc1 and is_megatron_mp
 
-    ...
+    part_in_dim, part_out_dim = in_dim, out_dim // 2
+    if not is_fc1 and is_megatron_mp:
+        part_in_dim, part_out_dim = in_dim // 2, out_dim
 
-    raise NotImplementedError
+    return mp_idx, dp_idx, mp_comm, dp_comm, part_in_dim, part_out_dim
 
 
 def naive_collect_forward_input(
@@ -110,12 +112,15 @@ def naive_collect_forward_input(
 
     # Note: you may want to ensure that the source variable and destination variable in your mpi func call should
     #       have the same data type, otherwise you will not collect the correct value.
+    collected_x = np.empty(x.size * mp_size, dtype = x.dtype)
 
     # Hint: Try to figure out the way MPI calls deal with the destination memory layout for 2d matrix transfer, this might
     #       might not align with your expected layout. In order to get the correct layout, you may wish to use some NumPy
     #       functions (np.split and np.concatenate might be helpful).
-
-    raise NotImplementedError
+    mp_comm.Barrier()
+    mp_comm.Allgather(x.T.reshape(-1), collected_x)
+    return collected_x.reshape(x.shape[1] * mp_size, x.shape[0]).T
+    
 
 
 def naive_collect_forward_output(
@@ -144,10 +149,12 @@ def naive_collect_forward_output(
     """
 
     """TODO: Your code here"""
+    collected_out = np.empty(out.size * mp_size, dtype = out.dtype)
 
-    # Hint: you might have just implemented something similar ^-^
-
-    raise NotImplementedError
+    mp_comm.Barrier()
+    mp_comm.Allgather(out.T.reshape(-1), collected_out)
+    return collected_out.reshape(out.shape[1] * mp_size, out.shape[0]).T
+    
 
 
 def megatron_collect_forward_input(
@@ -176,10 +183,8 @@ def megatron_collect_forward_input(
     """
 
     """TODO: Your code here"""
-
-    # Hint: you don't need all the input parameters to get the collected_x
-
-    raise NotImplementedError
+    return x
+    
 
 
 def megatron_collect_forward_output(
@@ -208,11 +213,11 @@ def megatron_collect_forward_output(
     """
 
     """TODO: Your code here"""
+    collected_out = np.empty(out.shape, dtype = out.dtype)
 
-    # Hint: try to work through a toy forward example for megatron-style model parallel to figure out the
-    #       the communication functions that you might need
-
-    raise NotImplementedError
+    mp_comm.Barrier()
+    mp_comm.Allreduce(out, collected_out)
+    return collected_out
 
 
 def naive_collect_backward_output(
@@ -242,9 +247,9 @@ def naive_collect_backward_output(
 
     """TODO: Your code here"""
 
-    # Hint: you might want to use np.split to get the collected_output_grad for each MP node
-
-    raise NotImplementedError
+    single_size = output_grad.shape[1] // mp_size
+    return output_grad[:, mp_group_idx * single_size: (mp_group_idx + 1) * single_size]
+    # return np.split(output_grad, mp_size)[mp_group_idx]
 
 
 def naive_collect_backward_x(
@@ -273,14 +278,11 @@ def naive_collect_backward_x(
     """
 
     """TODO: Your code here"""
+    collected_grad_x = np.empty(grad_x.size // mp_size, dtype = grad_x.dtype)
 
-    # Hint 1: The communication pattern for this function can be seen as the reverse of its forward
-    #         , so you might to check the naive_collect_forward_output() impl.
-
-    # Hint 2: You might want to use reduce_scatter
-
-    raise NotImplementedError
-
+    mp_comm.Barrier()
+    mp_comm.Reduce_scatter(grad_x.T.reshape(-1), collected_grad_x)
+    return collected_grad_x.reshape(grad_x.shape[1] // mp_size, grad_x.shape[0]).T
 
 def megatron_collect_backward_output(
     output_grad: np.ndarray,
@@ -308,11 +310,8 @@ def megatron_collect_backward_output(
     """
 
     """TODO: Your code here"""
-
-    # Hint: your implementation should be within one line of code
-
-    raise NotImplementedError
-
+    return output_grad
+    
 
 def megatron_collect_backward_x(
     grad_x: np.ndarray,
@@ -340,10 +339,7 @@ def megatron_collect_backward_x(
     """
 
     """TODO: Your code here"""
-
-    # Hint: your implementation should be within one line of code
-
-    raise NotImplementedError
+    return grad_x
 
 
 def collect_weight_grad(
@@ -375,7 +371,12 @@ def collect_weight_grad(
     """
 
     """TODO: Your code here"""
+    collected_grad_w = np.empty(grad_w.shape, dtype = grad_w.dtype)
+    collected_grad_b = np.empty(grad_b.shape, dtype = grad_b.dtype)
 
-    # Hint: Think about how you might want to aggregate the gradients from different nodes in data parallel training
-
-    raise NotImplementedError
+    dp_comm.Barrier()
+    dp_comm.Allreduce(grad_w, collected_grad_w)
+    dp_comm.Barrier()
+    dp_comm.Allreduce(grad_b, collected_grad_b)
+    return collected_grad_w, collected_grad_b
+    
